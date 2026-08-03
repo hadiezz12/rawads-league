@@ -1,10 +1,9 @@
-const CACHE_VERSION = "rawads-league-simple-v4";
+const CACHE_VERSION = "rawads-league-supabase-v2";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
-  "./db.json",
   "./manifest.json",
   "./assets/logo.svg"
 ];
@@ -34,6 +33,11 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   if (!url.pathname.startsWith(new URL(self.registration.scope).pathname)) return;
+
+  if (url.pathname.endsWith("/config.js")) {
+    event.respondWith(fetch(request));
+    return;
+  }
 
   if (request.mode === "navigate") {
     event.respondWith(fetch(request).catch(() => caches.match("./index.html")));

@@ -1,43 +1,53 @@
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "rawadsLeagueDb.v2";
-  const SESSION_KEY = "rawadsLeagueRole.v2";
-  const DB_PATH = "./db.json";
   const PAGE_SIZE = 8;
-
-  const blankDb = {
-    version: 1,
-    settings: {
-      leagueName: "Rawad's League",
-      leagueSubtitle: "Every action has consequences.",
-      adminPasswordHash: "249d5aeb37368f2d6f9ddce20662eb92a38b314f7bccf7d858d621d121d31b51"
-    },
-    friends: [],
-    events: []
+  const DEFAULT_SETTINGS = {
+    leagueName: "Rawad's League",
+    leagueSubtitle: "Every action has consequences."
   };
 
   const state = {
-    db: structuredClone(blankDb),
-    role: sessionStorage.getItem(SESSION_KEY) === "admin" ? "admin" : "spectator",
+    client: null,
+    session: null,
+    role: "spectator",
+    loading: true,
+    error: null,
+    settings: { ...DEFAULT_SETTINGS },
+    friends: [],
+    events: [],
     search: "",
     pointFilter: "all",
     friendFilter: "all",
     activityLimit: PAGE_SIZE,
-    modal: null
+    modal: null,
+    realtimeChannel: null,
+    pendingRealtimeRefresh: false
   };
 
   const dom = {};
 
   document.addEventListener("DOMContentLoaded", init);
 
-  async function init() {
+  function init() {
     cacheDom();
     bindEvents();
     renderLoading();
-    state.db = await loadDatabase();
-    render();
     registerServiceWorker();
+
+    if (!configureSupabase()) {
+      state.loading = false;
+      render();
+      return;
+    }
+
+    boot();
+  }
+
+  async function boot() {
+    await hydrateAuth();
+    await loadData(true);
+    setupRealtime();
   }
 
   function cacheDom() {
@@ -50,8 +60,7 @@
     dom.addFriendBtn = document.getElementById("addFriendBtn");
     dom.addEventBtn = document.getElementById("addEventBtn");
     dom.settingsBtn = document.getElementById("settingsBtn");
-    dom.exportBtn = document.getElementById("exportBtn");
-    dom.importInput = document.getElementById("importInput");
+    dom.refreshBtn = document.getElementById("refreshBtn");
     dom.friendCount = document.getElementById("friendCount");
     dom.eventCount = document.getElementById("eventCount");
     dom.latestEventText = document.getElementById("latestEventText");
@@ -70,9 +79,15 @@
     dom.logoutBtn.addEventListener("click", logout);
     dom.addFriendBtn.addEventListener("click", () => openFriendForm());
     dom.addEventBtn.addEventListener("click", () => openEventForm());
-    dom.settingsBtn.addEventListener("click", openSettingsForm);
-    dom.exportBtn.addEventListener("click", exportDatabase);
-    dom.importInput.addEventListener("change", importDatabase);
+    dom.settingsBtn.addEventListener("click", () => {
+      closeOpenMenus();
+      openSettingsForm();
+    });
+    dom.refreshBtn.addEventListener("click", async () => {
+      closeOpenMenus();
+      await loadData(true);
+      showToast("Data refreshed.", "success");
+    });
 
     dom.searchInput.addEventListener("input", () => {
       state.search = dom.searchInput.value.trim().toLowerCase();
@@ -100,82 +115,127 @@
     });
 
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") closeModal();
+      if (event.key === "Escape") {
+        if (state.modal) closeModal();
+        closeOpenMenus();
+      }
       if (event.key === "Tab" && state.modal) trapModalFocus(event);
+    });
+
+    document.addEventListener("click", (event) => {
+      document.querySelectorAll("details.action-menu[open]").forEach((details) => {
+        if (!details.contains(event.target)) details.removeAttribute("open");
+      });
     });
   }
 
-  async function loadDatabase() {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      try {
-        return sanitizeDb(JSON.parse(stored));
-      } catch (_error) {
-        localStorage.removeItem(STORAGE_KEY);
+  function configureSupabase() {
+    const config = window.RAWADS_LEAGUE_CONFIG || {};
+
+    if (!isConfigured(config)) {
+      state.error = new Error("Supabase is not configured yet. Fill in config.js after creating the Supabase project.");
+      return false;
+    }
+
+    if (!window.supabase?.createClient) {
+      state.error = new Error("The Supabase script did not load. Check the internet connection and refresh.");
+      return false;
+    }
+
+    state.client = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true
       }
+    });
+
+    return true;
+  }
+
+  function isConfigured(config) {
+    return (
+      typeof config.supabaseUrl === "string" &&
+      config.supabaseUrl.startsWith("https://") &&
+      !config.supabaseUrl.includes("YOUR_SUPABASE") &&
+      typeof config.supabaseAnonKey === "string" &&
+      config.supabaseAnonKey.length > 20 &&
+      !config.supabaseAnonKey.includes("YOUR_SUPABASE") &&
+      isUuid(config.rawadUserId)
+    );
+  }
+
+  function isAdminConfigured() {
+    return isUuid(window.RAWADS_LEAGUE_CONFIG?.rawadUserId);
+  }
+
+  async function hydrateAuth() {
+    const { data, error } = await state.client.auth.getSession();
+    if (error) showToast("Could not restore login session.", "error");
+    await applySession(data?.session || null);
+
+    state.client.auth.onAuthStateChange(async (_event, session) => {
+      await applySession(session);
+    });
+  }
+
+  async function applySession(session) {
+    state.session = session;
+
+    if (!session?.user) {
+      state.role = "spectator";
+      render();
+      return;
+    }
+
+    if (!isAdminConfigured() || session.user.id !== window.RAWADS_LEAGUE_CONFIG.rawadUserId) {
+      state.role = "spectator";
+      render();
+      await state.client.auth.signOut();
+      showToast("This Supabase account is not the Rawad admin account.", "error");
+      return;
+    }
+
+    state.role = "admin";
+    render();
+  }
+
+  async function loadData(showLoader = false) {
+    if (!state.client) return;
+
+    if (showLoader) {
+      state.loading = true;
+      state.error = null;
+      render();
     }
 
     try {
-      const response = await fetch(DB_PATH, { cache: "no-store" });
-      if (!response.ok) throw new Error("Could not load db.json");
-      return sanitizeDb(await response.json());
-    } catch (_error) {
-      showToast("Using an empty local database because db.json could not be loaded.", "error");
-      return structuredClone(blankDb);
+      const [settingsResult, friendsResult, eventsResult] = await Promise.all([
+        state.client.from("league_settings").select("*").eq("id", 1).maybeSingle(),
+        state.client.from("friends").select("*").order("name", { ascending: true }),
+        state.client
+          .from("point_events")
+          .select("*")
+          .order("event_date", { ascending: false })
+          .order("created_at", { ascending: false })
+      ]);
+
+      if (settingsResult.error) throw settingsResult.error;
+      if (friendsResult.error) throw friendsResult.error;
+      if (eventsResult.error) throw eventsResult.error;
+
+      state.settings = fromSettingsRow(settingsResult.data);
+      state.friends = (friendsResult.data || []).map(fromFriendRow);
+      state.events = (eventsResult.data || []).map(fromEventRow);
+      state.loading = false;
+      state.error = null;
+      render();
+    } catch (error) {
+      state.loading = false;
+      state.error = error;
+      render();
+      showToast("Could not load Supabase data.", "error");
     }
-  }
-
-  function saveDatabase() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.db));
-  }
-
-  function sanitizeDb(input) {
-    const db = {
-      version: 1,
-      settings: {
-        leagueName: cleanText(input?.settings?.leagueName) || blankDb.settings.leagueName,
-        leagueSubtitle: cleanText(input?.settings?.leagueSubtitle) || blankDb.settings.leagueSubtitle,
-        adminPasswordHash: isHash(input?.settings?.adminPasswordHash)
-          ? input.settings.adminPasswordHash
-          : blankDb.settings.adminPasswordHash
-      },
-      friends: Array.isArray(input?.friends) ? input.friends.map(sanitizeFriend).filter(Boolean) : [],
-      events: Array.isArray(input?.events) ? input.events.map(sanitizeEvent).filter(Boolean) : []
-    };
-
-    const friendIds = new Set(db.friends.map((friend) => friend.id));
-    db.events = db.events.filter((event) => friendIds.has(event.friendId));
-    return db;
-  }
-
-  function sanitizeFriend(friend) {
-    const name = cleanText(friend?.name);
-    if (!name) return null;
-    return {
-      id: cleanText(friend.id) || makeId(),
-      name,
-      nickname: cleanText(friend.nickname),
-      emoji: cleanText(friend.emoji),
-      avatarUrl: cleanText(friend.avatarUrl),
-      bio: cleanText(friend.bio),
-      createdAt: validDate(friend.createdAt) || new Date().toISOString(),
-      updatedAt: validDate(friend.updatedAt) || new Date().toISOString()
-    };
-  }
-
-  function sanitizeEvent(event) {
-    const points = Number(event?.points);
-    const reason = cleanText(event?.reason);
-    if (!Number.isInteger(points) || points === 0 || !reason) return null;
-    return {
-      id: cleanText(event.id) || makeId(),
-      friendId: cleanText(event.friendId),
-      points,
-      reason,
-      eventDate: validDate(event.eventDate) || new Date().toISOString(),
-      createdAt: validDate(event.createdAt) || new Date().toISOString(),
-      updatedAt: validDate(event.updatedAt) || new Date().toISOString()
-    };
   }
 
   function renderLoading() {
@@ -185,18 +245,19 @@
   }
 
   function render() {
-    document.title = `${state.db.settings.leagueName} | Friendship League`;
-    dom.leagueName.textContent = state.db.settings.leagueName;
-    dom.leagueSubtitle.textContent = state.db.settings.leagueSubtitle;
-    dom.roleBadge.textContent = state.role === "admin" ? "Admin" : "Spectator";
-    dom.roleBadge.classList.toggle("admin", state.role === "admin");
-    dom.loginBtn.hidden = state.role === "admin";
-    dom.logoutBtn.hidden = state.role !== "admin";
-    dom.adminPanel.hidden = state.role !== "admin";
+    const isAdmin = state.role === "admin";
+    document.title = `${state.settings.leagueName} | Friendship League`;
+    dom.leagueName.textContent = state.settings.leagueName;
+    dom.leagueSubtitle.textContent = state.settings.leagueSubtitle;
+    dom.roleBadge.textContent = isAdmin ? "Admin" : "Spectator";
+    dom.roleBadge.classList.toggle("admin", isAdmin);
+    dom.loginBtn.hidden = isAdmin;
+    dom.logoutBtn.hidden = !isAdmin;
+    dom.adminPanel.hidden = !isAdmin;
 
-    dom.friendCount.textContent = String(state.db.friends.length);
-    dom.eventCount.textContent = String(state.db.events.length);
-    dom.latestEventText.textContent = latestSummary();
+    dom.friendCount.textContent = state.loading ? "..." : String(state.friends.length);
+    dom.eventCount.textContent = state.loading ? "..." : String(state.events.length);
+    dom.latestEventText.textContent = state.loading ? "Loading..." : latestSummary();
 
     renderFriendFilter();
     renderPodium();
@@ -205,17 +266,27 @@
   }
 
   function renderFriendFilter() {
-    const current = state.db.friends.some((friend) => friend.id === state.friendFilter) ? state.friendFilter : "all";
+    const current = state.friends.some((friend) => friend.id === state.friendFilter) ? state.friendFilter : "all";
     state.friendFilter = current;
     dom.friendFilter.replaceChildren(option("All friends", "all"));
-    sortByName(state.db.friends).forEach((friend) => dom.friendFilter.appendChild(option(friend.name, friend.id)));
+    sortByName(state.friends).forEach((friend) => dom.friendFilter.appendChild(option(friend.name, friend.id)));
     dom.friendFilter.value = state.friendFilter;
   }
 
   function renderPodium() {
-    const standings = calculateStandings();
     dom.podium.replaceChildren();
 
+    if (state.loading) {
+      renderLoading();
+      return;
+    }
+
+    if (state.error) {
+      dom.podium.appendChild(errorState("Setup or loading problem", state.error.message));
+      return;
+    }
+
+    const standings = calculateStandings();
     if (!standings.length) {
       dom.podium.appendChild(emptyState("No friends yet", state.role === "admin" ? "Add the first friend." : "Rawad has not added friends yet."));
       return;
@@ -236,9 +307,19 @@
   }
 
   function renderLeaderboard() {
-    const standings = calculateStandings();
     dom.leaderboard.replaceChildren();
 
+    if (state.loading) {
+      dom.leaderboard.replaceChildren(skeleton("row"), skeleton("row"), skeleton("row"));
+      return;
+    }
+
+    if (state.error) {
+      dom.leaderboard.appendChild(errorState("Leaderboard unavailable", state.error.message));
+      return;
+    }
+
+    const standings = calculateStandings();
     if (!standings.length) {
       dom.leaderboard.appendChild(emptyState("Empty leaderboard", state.role === "admin" ? "Use Add friend to start." : "Nothing to show yet."));
       return;
@@ -276,10 +357,22 @@
       button.setAttribute("aria-pressed", String(active));
     });
 
-    const events = getFilteredEvents();
     dom.activity.replaceChildren();
 
-    if (!state.db.events.length) {
+    if (state.loading) {
+      dom.activity.replaceChildren(skeleton("row"), skeleton("row"), skeleton("row"));
+      dom.showMoreBtn.hidden = true;
+      return;
+    }
+
+    if (state.error) {
+      dom.activity.appendChild(errorState("Activity unavailable", state.error.message));
+      dom.showMoreBtn.hidden = true;
+      return;
+    }
+
+    const events = getFilteredEvents();
+    if (!state.events.length) {
       dom.activity.appendChild(emptyState("No point events", state.role === "admin" ? "Record the first award or deduction." : "No activities have been recorded yet."));
       dom.showMoreBtn.hidden = true;
       return;
@@ -323,10 +416,16 @@
   }
 
   function openLoginModal() {
+    if (!state.client) {
+      showToast("Finish config.js first.", "error");
+      return;
+    }
+
     const form = el("form", "form");
+    const email = input("email", "Email", "email");
+    email.control.autocomplete = "email";
     const password = input("password", "Password", "password");
     password.control.autocomplete = "current-password";
-    password.control.setAttribute("aria-label", "Admin password");
     const toggle = button("Show", "secondary", () => {
       password.control.type = password.control.type === "password" ? "text" : "password";
       toggle.textContent = password.control.type === "password" ? "Show" : "Hide";
@@ -337,36 +436,56 @@
     const submit = button("Login", "primary");
     submit.type = "submit";
 
-    form.append(labelWrap("Admin password", passwordRow), status, actionRow(button("Cancel", "ghost", closeModal), submit));
+    form.append(field(email), labelWrap("Password", passwordRow), status, actionRow(button("Cancel", "ghost", closeModal), submit));
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       setStatus(status, "");
-      submit.disabled = true;
-      submit.textContent = "Checking...";
-      const hash = await sha256(password.control.value);
-      if (hash !== state.db.settings.adminPasswordHash) {
-        state.role = "spectator";
-        sessionStorage.removeItem(SESSION_KEY);
-        submit.disabled = false;
-        submit.textContent = "Login";
-        setStatus(status, "Wrong password.", "error");
+
+      const emailValue = email.control.value.trim();
+      const passwordValue = password.control.value;
+      if (!emailValue || !passwordValue) {
+        setStatus(status, "Enter Rawad's email and password.", "error");
         return;
       }
-      state.role = "admin";
-      sessionStorage.setItem(SESSION_KEY, "admin");
+
+      setBusy(submit, true, "Checking...");
+      const { data, error } = await state.client.auth.signInWithPassword({
+        email: emailValue,
+        password: passwordValue
+      });
+
+      if (error) {
+        setBusy(submit, false);
+        setStatus(status, error.message, "error");
+        return;
+      }
+
+      await applySession(data.session);
+      if (state.role !== "admin") {
+        setBusy(submit, false);
+        setStatus(status, "This account is not authorized as Rawad.", "error");
+        return;
+      }
+
       closeModal();
-      render();
       showToast("Admin mode enabled.", "success");
+      await loadData(false);
     });
 
-    openModal("Admin login", "Spectators can view only. Admin can edit local JSON data.", form);
+    openModal("Admin login", "Use the Rawad Supabase Auth user. There is no public sign-up.", form);
   }
 
-  function logout() {
+  async function logout() {
+    if (!state.client) return;
+    const { error } = await state.client.auth.signOut();
+    if (error) {
+      showToast(error.message, "error");
+      return;
+    }
     state.role = "spectator";
-    sessionStorage.removeItem(SESSION_KEY);
+    state.session = null;
     render();
-    showToast("Back to spectator mode.", "success");
+    showToast("Logged out.", "success");
   }
 
   function openFriendForm(friend = null) {
@@ -388,44 +507,41 @@
       actionRow(button("Cancel", "ghost", closeModal), submit)
     );
 
-    form.addEventListener("submit", (event) => {
+    form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const payload = {
         name: cleanText(name.control.value),
-        nickname: cleanText(nickname.control.value),
-        emoji: cleanText(emoji.control.value),
-        avatarUrl: cleanText(avatarUrl.control.value),
-        bio: cleanText(bio.control.value)
+        nickname: nullableText(nickname.control.value),
+        emoji: nullableText(emoji.control.value),
+        avatar_url: nullableText(avatarUrl.control.value),
+        bio: nullableText(bio.control.value)
       };
 
-      if (!payload.name) {
-        setStatus(status, "Name is required.", "error");
+      if (!payload.name) return setStatus(status, "Name is required.", "error");
+      if (payload.avatar_url && !isUrl(payload.avatar_url)) return setStatus(status, "Avatar URL must start with http:// or https://.", "error");
+
+      setBusy(submit, true, editing ? "Saving..." : "Adding...");
+      const result = editing
+        ? await state.client.from("friends").update(payload).eq("id", friend.id)
+        : await state.client.from("friends").insert(payload);
+
+      if (result.error) {
+        setBusy(submit, false);
+        setStatus(status, result.error.message, "error");
         return;
       }
 
-      if (payload.avatarUrl && !isUrl(payload.avatarUrl)) {
-        setStatus(status, "Avatar URL must start with http:// or https://.", "error");
-        return;
-      }
-
-      const now = new Date().toISOString();
-      if (editing) {
-        Object.assign(friend, payload, { updatedAt: now });
-      } else {
-        state.db.friends.push({ id: makeId(), ...payload, createdAt: now, updatedAt: now });
-      }
-      saveDatabase();
       closeModal();
-      render();
+      await loadData(false);
       showToast(editing ? "Friend updated." : "Friend added.", "success");
     });
 
-    openModal(editing ? "Edit friend" : "Add friend", "Simple local JSON record.", form);
+    openModal(editing ? "Edit friend" : "Add friend", "This saves to Supabase for every device.", form);
   }
 
   function openEventForm(eventRecord = null, preselectedFriendId = "") {
     if (!requireAdmin()) return;
-    if (!state.db.friends.length) {
+    if (!state.friends.length) {
       showToast("Add a friend first.", "error");
       openFriendForm();
       return;
@@ -433,7 +549,7 @@
 
     const editing = Boolean(eventRecord);
     const form = el("form", "form");
-    const friend = select("Friend", sortByName(state.db.friends).map((item) => [item.name, item.id]));
+    const friend = select("Friend", sortByName(state.friends).map((item) => [item.name, item.id]));
     const type = select("Type", [["Award points", "award"], ["Deduct points", "deduct"]]);
     const amount = input("number", "Amount", "number", eventRecord ? String(Math.abs(eventRecord.points)) : "1");
     amount.control.min = "1";
@@ -444,35 +560,39 @@
     const submit = button(editing ? "Save activity" : "Record activity", "primary");
     submit.type = "submit";
 
-    friend.control.value = eventRecord?.friendId || preselectedFriendId || state.db.friends[0].id;
+    friend.control.value = eventRecord?.friendId || preselectedFriendId || state.friends[0].id;
     type.control.value = eventRecord && eventRecord.points < 0 ? "deduct" : "award";
 
     form.append(field(friend), field(type), field(amount), field(reason), field(date), status, actionRow(button("Cancel", "ghost", closeModal), submit));
-    form.addEventListener("submit", (submitEvent) => {
+    form.addEventListener("submit", async (submitEvent) => {
       submitEvent.preventDefault();
       const points = Number(amount.control.value);
       const eventDate = new Date(date.control.value);
       const payload = {
-        friendId: friend.control.value,
+        friend_id: friend.control.value,
         points: type.control.value === "deduct" ? -points : points,
         reason: cleanText(reason.control.value),
-        eventDate: eventDate.toISOString()
+        event_date: eventDate.toISOString()
       };
 
-      if (!payload.friendId) return setStatus(status, "Choose a friend.", "error");
+      if (!payload.friend_id) return setStatus(status, "Choose a friend.", "error");
       if (!Number.isInteger(points) || points <= 0) return setStatus(status, "Amount must be a whole number above zero.", "error");
       if (!payload.reason) return setStatus(status, "Reason is required.", "error");
       if (Number.isNaN(eventDate.getTime())) return setStatus(status, "Choose a valid date.", "error");
 
-      const now = new Date().toISOString();
-      if (editing) {
-        Object.assign(eventRecord, payload, { updatedAt: now });
-      } else {
-        state.db.events.push({ id: makeId(), ...payload, createdAt: now, updatedAt: now });
+      setBusy(submit, true, editing ? "Saving..." : "Recording...");
+      const result = editing
+        ? await state.client.from("point_events").update(payload).eq("id", eventRecord.id)
+        : await state.client.from("point_events").insert(payload);
+
+      if (result.error) {
+        setBusy(submit, false);
+        setStatus(status, result.error.message, "error");
+        return;
       }
-      saveDatabase();
+
       closeModal();
-      render();
+      await loadData(false);
       showToast(editing ? "Activity updated." : "Points recorded.", "success");
     });
 
@@ -482,33 +602,39 @@
   function openSettingsForm() {
     if (!requireAdmin()) return;
     const form = el("form", "form");
-    const name = input("text", "League name", "text", state.db.settings.leagueName);
-    const subtitle = input("text", "League subtitle", "text", state.db.settings.leagueSubtitle);
-    const newPassword = input("password", "New admin password", "password");
+    const name = input("text", "League name", "text", state.settings.leagueName);
+    const subtitle = input("text", "League subtitle", "text", state.settings.leagueSubtitle);
     const status = formStatus();
     const submit = button("Save settings", "primary");
     submit.type = "submit";
 
-    const help = textEl("p", "Leave the password blank to keep the current one.");
-    help.className = "help";
-    form.append(field(name), field(subtitle), field(newPassword), help, status, actionRow(button("Cancel", "ghost", closeModal), submit));
+    form.append(field(name), field(subtitle), status, actionRow(button("Cancel", "ghost", closeModal), submit));
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const leagueName = cleanText(name.control.value);
       if (!leagueName) return setStatus(status, "League name is required.", "error");
-      state.db.settings.leagueName = leagueName;
-      state.db.settings.leagueSubtitle = cleanText(subtitle.control.value) || blankDb.settings.leagueSubtitle;
-      if (newPassword.control.value) {
-        if (newPassword.control.value.length < 4) return setStatus(status, "Use at least 4 characters.", "error");
-        state.db.settings.adminPasswordHash = await sha256(newPassword.control.value);
+
+      setBusy(submit, true, "Saving...");
+      const { error } = await state.client
+        .from("league_settings")
+        .update({
+          league_name: leagueName,
+          league_subtitle: cleanText(subtitle.control.value) || DEFAULT_SETTINGS.leagueSubtitle
+        })
+        .eq("id", 1);
+
+      if (error) {
+        setBusy(submit, false);
+        setStatus(status, error.message, "error");
+        return;
       }
-      saveDatabase();
+
       closeModal();
-      render();
+      await loadData(false);
       showToast("Settings saved.", "success");
     });
 
-    openModal("Settings", "Saved in this browser's local JSON database.", form);
+    openModal("Settings", "Saved to Supabase for every visitor.", form);
   }
 
   function openProfile(friendId) {
@@ -516,7 +642,7 @@
     if (!friend) return;
 
     const standing = calculateStandings().find((item) => item.id === friendId);
-    const events = state.db.events.filter((event) => event.friendId === friendId).sort(oldestFirst);
+    const events = state.events.filter((event) => event.friendId === friendId).sort(oldestFirst);
     const positive = events.filter((event) => event.points > 0);
     const negative = events.filter((event) => event.points < 0);
     const content = el("div", "profile");
@@ -603,44 +729,52 @@
   }
 
   function confirmDeleteFriend(friend) {
-    confirmModal("Delete friend?", `Delete ${friend.name} and all their point history?`, "Delete friend", () => {
-      state.db.friends = state.db.friends.filter((item) => item.id !== friend.id);
-      state.db.events = state.db.events.filter((event) => event.friendId !== friend.id);
-      saveDatabase();
-      render();
+    confirmModal("Delete friend?", `Delete ${friend.name} and all their point history?`, "Delete friend", async () => {
+      const { error } = await state.client.from("friends").delete().eq("id", friend.id);
+      if (error) throw error;
+      await loadData(false);
       showToast("Friend deleted.", "success");
     });
   }
 
   function confirmDeleteEvent(eventRecord) {
-    confirmModal("Delete activity?", "Remove this point event and recalculate the table?", "Delete activity", () => {
-      state.db.events = state.db.events.filter((item) => item.id !== eventRecord.id);
-      saveDatabase();
-      render();
+    confirmModal("Delete activity?", "Remove this point event and recalculate the table?", "Delete activity", async () => {
+      const { error } = await state.client.from("point_events").delete().eq("id", eventRecord.id);
+      if (error) throw error;
+      await loadData(false);
       showToast("Activity deleted.", "success");
     });
   }
 
   function confirmModal(title, message, confirmText, action) {
     const box = el("div", "form");
-    box.append(textEl("p", message), actionRow(button("Cancel", "ghost", closeModal), button(confirmText, "danger", () => {
-      action();
-      closeModal();
-    })));
+    const status = formStatus();
+    const confirmButton = button(confirmText, "danger", async () => {
+      setStatus(status, "");
+      setBusy(confirmButton, true, "Working...");
+      try {
+        await action();
+        closeModal();
+      } catch (error) {
+        setBusy(confirmButton, false);
+        setStatus(status, error.message || "Something went wrong.", "error");
+      }
+    });
+    box.append(textEl("p", message), status, actionRow(button("Cancel", "ghost", closeModal), confirmButton));
     openModal(title, "Please confirm.", box);
   }
 
-  function calculateTotals(events = state.db.events) {
-    const totals = new Map(state.db.friends.map((friend) => [friend.id, 0]));
+  function calculateTotals(events = state.events) {
+    const totals = new Map(state.friends.map((friend) => [friend.id, 0]));
     events.forEach((event) => {
       if (totals.has(event.friendId)) totals.set(event.friendId, totals.get(event.friendId) + event.points);
     });
     return totals;
   }
 
-  function calculateStandings(events = state.db.events) {
+  function calculateStandings(events = state.events) {
     const totals = calculateTotals(events);
-    const sorted = state.db.friends
+    const sorted = state.friends
       .map((friend) => ({ ...friend, total: totals.get(friend.id) || 0 }))
       .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 
@@ -658,11 +792,11 @@
     const movements = new Map();
     const latest = latestEvent();
     if (!latest) {
-      state.db.friends.forEach((friend) => movements.set(friend.id, { type: "same", label: "-" }));
+      state.friends.forEach((friend) => movements.set(friend.id, { type: "same", label: "-" }));
       return movements;
     }
 
-    const previousEvents = state.db.events.filter((event) => event.id !== latest.id);
+    const previousEvents = state.events.filter((event) => event.id !== latest.id);
     const previousRanks = new Map(calculateStandings(previousEvents).map((item) => [item.id, item.rank]));
     const latestHadPreviousEvents = previousEvents.some((event) => event.friendId === latest.friendId);
 
@@ -681,7 +815,7 @@
   }
 
   function getFilteredEvents() {
-    return state.db.events
+    return state.events
       .slice()
       .sort(newestFirst)
       .filter((event) => {
@@ -693,41 +827,35 @@
   }
 
   function latestEvent() {
-    return state.db.events.slice().sort(newestFirst)[0] || null;
+    return state.events.slice().sort(newestFirst)[0] || null;
   }
 
   function latestSummary() {
+    if (state.error) return "Setup needed";
     const latest = latestEvent();
     if (!latest) return "No activity yet";
     const friend = friendById(latest.friendId);
     return `${friend?.name || "Someone"} ${signedPoints(latest.points)}`;
   }
 
-  function exportDatabase() {
-    if (!requireAdmin()) return;
-    const blob = new Blob([JSON.stringify(state.db, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "db.json";
-    link.click();
-    URL.revokeObjectURL(url);
+  function setupRealtime() {
+    if (!state.client || state.realtimeChannel) return;
+
+    state.realtimeChannel = state.client
+      .channel("rawads-league-live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "league_settings" }, scheduleRealtimeRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "friends" }, scheduleRealtimeRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "point_events" }, scheduleRealtimeRefresh)
+      .subscribe();
   }
 
-  async function importDatabase(event) {
-    if (!requireAdmin()) return;
-    const file = event.target.files[0];
-    event.target.value = "";
-    if (!file) return;
-    try {
-      const imported = JSON.parse(await file.text());
-      state.db = sanitizeDb(imported);
-      saveDatabase();
-      render();
-      showToast("JSON imported.", "success");
-    } catch (_error) {
-      showToast("That JSON file could not be imported.", "error");
-    }
+  function scheduleRealtimeRefresh() {
+    if (state.pendingRealtimeRefresh) return;
+    state.pendingRealtimeRefresh = true;
+    window.setTimeout(async () => {
+      state.pendingRealtimeRefresh = false;
+      await loadData(false);
+    }, 300);
   }
 
   function openModal(title, subtitle, content, wide = false) {
@@ -753,7 +881,7 @@
     document.body.classList.add("modal-open");
     state.modal = { dialog, returnFocus: document.activeElement };
     setTimeout(() => {
-      const focusTarget = dialog.querySelector("input, select, textarea, button");
+      const focusTarget = dialog.querySelector("input, select, textarea, button, summary");
       if (focusTarget) focusTarget.focus();
     }, 0);
   }
@@ -768,7 +896,7 @@
   }
 
   function trapModalFocus(event) {
-    const items = [...state.modal.dialog.querySelectorAll("button, input, select, textarea, a[href]")].filter((item) => !item.disabled);
+    const items = [...state.modal.dialog.querySelectorAll("button, input, select, textarea, a[href], summary")].filter((item) => !item.disabled);
     if (!items.length) return;
     const first = items[0];
     const last = items[items.length - 1];
@@ -791,14 +919,18 @@
 
   function requireAdmin() {
     if (state.role !== "admin") {
-      showToast("Admin password required.", "error");
+      showToast("Admin login required.", "error");
       return false;
     }
     return true;
   }
 
+  function closeOpenMenus() {
+    document.querySelectorAll("details.action-menu[open]").forEach((details) => details.removeAttribute("open"));
+  }
+
   function friendById(id) {
-    return state.db.friends.find((friend) => friend.id === id);
+    return state.friends.find((friend) => friend.id === id);
   }
 
   function sortByName(friends) {
@@ -834,8 +966,7 @@
   }
 
   function smallButton(text, onClick) {
-    const node = button(text, "tiny", onClick);
-    return node;
+    return button(text, "tiny", onClick);
   }
 
   function actionMenu(label, items) {
@@ -920,6 +1051,18 @@
     node.className = `form-status ${type}`;
   }
 
+  function setBusy(buttonNode, busy, text = "Working...") {
+    if (busy) {
+      buttonNode.dataset.originalText = buttonNode.textContent;
+      buttonNode.textContent = text;
+      buttonNode.disabled = true;
+      return;
+    }
+    buttonNode.textContent = buttonNode.dataset.originalText || buttonNode.textContent;
+    buttonNode.disabled = false;
+    delete buttonNode.dataset.originalText;
+  }
+
   function avatar(friend, size) {
     const node = el("span", `avatar ${size}`);
     const fallback = friend ? cleanText(friend.emoji) || initials(friend.name) : "?";
@@ -988,6 +1131,14 @@
     return box;
   }
 
+  function errorState(title, message) {
+    const box = emptyState(title, message);
+    if (state.client) {
+      box.appendChild(button("Try again", "secondary", () => loadData(true)));
+    }
+    return box;
+  }
+
   function skeleton(kind) {
     return el("div", `skeleton ${kind}`);
   }
@@ -1045,13 +1196,13 @@
     return local.toISOString().slice(0, 16);
   }
 
-  function validDate(value) {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? "" : date.toISOString();
-  }
-
   function cleanText(value) {
     return value === null || value === undefined ? "" : String(value).trim();
+  }
+
+  function nullableText(value) {
+    const text = cleanText(value);
+    return text ? text : null;
   }
 
   function initials(name) {
@@ -1068,18 +1219,44 @@
     }
   }
 
-  function isHash(value) {
-    return /^[a-f0-9]{64}$/i.test(cleanText(value));
+  function isUuid(value) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cleanText(value));
   }
 
   function makeId() {
     return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
-  async function sha256(text) {
-    const bytes = new TextEncoder().encode(text);
-    const hash = await crypto.subtle.digest("SHA-256", bytes);
-    return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  function fromSettingsRow(row) {
+    return {
+      leagueName: row?.league_name || DEFAULT_SETTINGS.leagueName,
+      leagueSubtitle: row?.league_subtitle || DEFAULT_SETTINGS.leagueSubtitle
+    };
+  }
+
+  function fromFriendRow(row) {
+    return {
+      id: row.id,
+      name: row.name || "",
+      nickname: row.nickname || "",
+      emoji: row.emoji || "",
+      avatarUrl: row.avatar_url || "",
+      bio: row.bio || "",
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  function fromEventRow(row) {
+    return {
+      id: row.id,
+      friendId: row.friend_id,
+      points: Number(row.points) || 0,
+      reason: row.reason || "",
+      eventDate: row.event_date,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
   }
 
   function registerServiceWorker() {

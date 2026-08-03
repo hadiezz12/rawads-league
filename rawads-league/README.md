@@ -1,49 +1,20 @@
 # Rawad's League
 
-Rawad's League is a simple friendship scoreboard. Visitors are spectators. The admin can add friends, add or deduct points, edit entries, delete entries, and update the league title.
+Rawad's League is a public friendship leaderboard with one admin: Rawad.
 
-This version uses no Supabase, no backend, no npm, and no build tools.
+Visitors can open the site and watch the leaderboard. Rawad can log in and add friends, edit friends, delete friends, add points, deduct points, edit activities, and delete activities.
 
-## How it works
+The site is still just HTML, CSS, and JavaScript on GitHub Pages. Supabase stores the shared data so laptop and phone see the same leaderboard.
 
-- `index.html`, `styles.css`, and `app.js` make the website.
-- `db.json` is the starting JSON database.
-- When the page opens, it loads `db.json`.
-- After edits, the browser saves the changed database in `localStorage`.
-- Admins can export the current database as `db.json`.
-- Admins can import a JSON file to replace the browser's local database.
-
-Important: GitHub Pages is static hosting. It cannot save changes back into `db.json` for everyone automatically. If Rawad edits the league on his browser, those edits live in that browser until he exports the JSON and uploads/commits the new `db.json`.
-
-## Default admin password
-
-The default admin password is:
-
-```text
-rawad-admin
-```
-
-Change it from the website:
-
-1. Open the site.
-2. Click **Admin login**.
-3. Enter the default password.
-4. Click **Settings**.
-5. Enter a new admin password.
-6. Save settings.
-7. Export JSON.
-8. Replace the repository's `db.json` with the exported file.
-
-The password itself is not stored in plain text. `db.json` stores a SHA-256 hash. This is simple, not serious security. Anyone who can edit JavaScript in their own browser can bypass a static site's UI. Use this only for a private/fun project.
-
-## Files
+## Files you care about
 
 ```text
 rawads-league/
 ├── index.html
 ├── styles.css
 ├── app.js
-├── db.json
+├── config.js
+├── supabase-setup.sql
 ├── README.md
 ├── manifest.json
 ├── service-worker.js
@@ -51,9 +22,186 @@ rawads-league/
     └── logo.svg
 ```
 
+## Super simple overview
+
+GitHub Pages shows the website.
+
+Supabase stores:
+
+- league name
+- friends
+- points history
+
+Supabase Auth logs Rawad in.
+
+Supabase Row Level Security makes sure visitors can only read. Only Rawad's Auth user can write.
+
+## Step 1: Create the Supabase project
+
+1. Open https://supabase.com
+2. Click **Start your project** or **Sign in**.
+3. Sign in.
+4. Click **New project**.
+5. Choose your organization.
+6. In **Project name**, type:
+
+```text
+rawads-league
+```
+
+7. Type a database password. Save it somewhere safe.
+8. Choose the nearest region.
+9. Click **Create new project**.
+10. Wait until Supabase finishes creating it.
+
+## Step 2: Create the database tables
+
+1. In Supabase, open your `rawads-league` project.
+2. Look at the left sidebar.
+3. Click **SQL Editor**.
+4. Click **New query**.
+5. Open this file in the GitHub repo:
+
+```text
+rawads-league/supabase-setup.sql
+```
+
+6. Copy only **SECTION 1** and **SECTION 2**.
+7. Paste them into Supabase SQL Editor.
+8. Click **Run**.
+
+Stop here. Do not run SECTION 3 yet.
+
+## Step 3: Create Rawad's admin login
+
+1. In Supabase left sidebar, click **Authentication**.
+2. Click **Users**.
+3. Click **Add user**.
+4. Click **Create new user** if Supabase shows choices.
+5. Type Rawad's email.
+6. Type Rawad's password.
+7. If you see **Auto Confirm User**, turn it on.
+8. Click **Create user**.
+
+There is no sign-up page on the website. Only this user should exist.
+
+## Step 4: Copy Rawad's user UUID
+
+1. Stay on **Authentication** -> **Users**.
+2. Click Rawad's user row.
+3. Find the long ID/UUID. It looks like this:
+
+```text
+00000000-0000-0000-0000-000000000000
+```
+
+4. Copy that UUID.
+
+## Step 5: Give only Rawad admin write permission
+
+1. Go back to **SQL Editor**.
+2. Click **New query**.
+3. Copy **SECTION 3** from `supabase-setup.sql`.
+4. Find this text:
+
+```text
+YOUR_RAWAD_USER_UUID
+```
+
+5. Replace it with the UUID you copied.
+6. Click **Run**.
+
+Now visitors can read, but only Rawad can write.
+
+## Step 6: Get your Supabase URL and anon key
+
+1. In Supabase left sidebar, click the **Project Settings** gear icon.
+2. Click **API**.
+3. Find **Project URL**.
+4. Copy it.
+5. Find **Project API keys**.
+6. Copy the **anon** or **publishable** key.
+
+Do not copy the service role key. Never put the service role key in GitHub.
+
+## Step 7: Put the Supabase values into the website
+
+Open:
+
+```text
+rawads-league/config.js
+```
+
+It looks like this:
+
+```javascript
+window.RAWADS_LEAGUE_CONFIG = {
+  supabaseUrl: "YOUR_SUPABASE_PROJECT_URL",
+  supabaseAnonKey: "YOUR_SUPABASE_ANON_KEY",
+  rawadUserId: "YOUR_RAWAD_USER_UUID"
+};
+```
+
+Replace:
+
+- `YOUR_SUPABASE_PROJECT_URL` with the Project URL
+- `YOUR_SUPABASE_ANON_KEY` with the anon/publishable key
+- `YOUR_RAWAD_USER_UUID` with Rawad's UUID
+
+Commit and push `config.js` to GitHub.
+
+## Step 8: Disable public sign-ups
+
+Supabase dashboard wording can change, but usually:
+
+1. Click **Authentication**.
+2. Click **Providers** or **Sign In / Providers**.
+3. Click **Email**.
+4. Keep email/password login enabled.
+5. Turn off public sign-ups if you see an option like **Allow new users to sign up**.
+6. Save.
+
+Even if someone creates another account somehow, the database policies still block them because only Rawad's UUID can write.
+
+## Step 9: Enable Realtime
+
+The SQL tries to enable realtime automatically.
+
+If phone/laptop does not update live:
+
+1. In Supabase left sidebar, click **Database**.
+2. Click **Publications** or **Replication**.
+3. Find `supabase_realtime`.
+4. Enable these tables:
+
+```text
+league_settings
+friends
+point_events
+```
+
+5. Save.
+
+The site still works without realtime. A refresh will always load the saved data.
+
+## Step 10: Use the website
+
+1. Open the GitHub Pages URL.
+2. Click **Admin login**.
+3. Type Rawad's email.
+4. Type Rawad's password.
+5. Click **Login**.
+6. Click **Add friend**.
+7. Add a friend.
+8. Click **Add points**.
+9. Add or deduct points.
+10. Open the site on your phone.
+
+Your phone should see the same Supabase data.
+
 ## Local testing
 
-Do not open `index.html` directly. Use a tiny local web server so `db.json` and the service worker behave correctly.
+Do not open `index.html` directly.
 
 From inside the `rawads-league` folder:
 
@@ -67,101 +215,47 @@ Open:
 http://localhost:8000
 ```
 
-If port `8000` is busy:
+## GitHub Pages
 
-```bash
-python -m http.server 8080
+If the project is deployed from the repository root, and the files are inside the `rawads-league` folder, your URL may be:
+
+```text
+https://hadiezz12.github.io/rawads-league/rawads-league/
 ```
 
-## GitHub Pages deployment
+If you later move the files to the repository root, the URL becomes:
 
-1. Create a GitHub repository.
-2. Upload every file inside `rawads-league`.
-3. Open the repository on GitHub.
-4. Go to **Settings**.
-5. Go to **Pages**.
-6. Choose **Deploy from a branch**.
-7. Select the `main` branch.
-8. Select the root folder.
-9. Save.
-10. Open the GitHub Pages URL when GitHub finishes publishing.
-
-Optional Git commands:
-
-```bash
-git init
-git add .
-git commit -m "Create Rawad's League"
-git branch -M main
-git remote add origin REPOSITORY_URL
-git push -u origin main
+```text
+https://hadiezz12.github.io/rawads-league/
 ```
 
-## Updating the shared database
+## Security notes
 
-Because this is static hosting, edits do not automatically update GitHub.
-
-To make Rawad's edits visible to everyone:
-
-1. Login as admin.
-2. Make changes.
-3. Click **Export JSON**.
-4. Replace the repository's `db.json` with the exported file.
-5. Commit and push.
-6. GitHub Pages redeploys.
-
-Visitors who already opened the site may need a hard refresh if the service worker cached old files.
-
-## Changing the service worker cache
-
-When static files change, update this line in `service-worker.js`:
-
-```javascript
-const CACHE_VERSION = "rawads-league-simple-v1";
-```
-
-For example, change it to:
-
-```javascript
-const CACHE_VERSION = "rawads-league-simple-v2";
-```
-
-Then commit and push.
-
-## Security note
-
-This is intentionally simple.
-
-- There is no real server-side security.
-- The role system is local to the browser.
-- Spectators do not see edit buttons.
-- Admin mode requires the password hash in `db.json`.
-- A technical person can still bypass frontend-only controls.
-
-For real private admin security, use a backend or a hosted database with server-side rules. This project avoids that because it is meant to stay simple.
+- The anon/publishable key is okay in browser code.
+- The service role key is not okay in browser code.
+- Never paste the service role key into `config.js`.
+- Rawad's password is stored by Supabase Auth, not in this repo.
+- Hiding buttons is not security.
+- Row Level Security is the real protection.
 
 ## Troubleshooting
 
-### Blank page
+### The page says Supabase is not configured
 
-Use a local server instead of opening the file directly. Check that `app.js`, `styles.css`, and `db.json` are in the same folder.
+You did not edit `config.js`, or one value is wrong.
 
-### Login does not work
+### Rawad can log in but cannot add friends
 
-Try the default password `rawad-admin`. If you changed it and forgot it, replace `db.json` with a backup or put the default hash back into `settings.adminPasswordHash`.
+The UUID in SECTION 3 is probably wrong. Copy Rawad's UUID again from **Authentication** -> **Users**, replace it in SECTION 3, and run SECTION 3 again.
 
-### My edits disappeared
+### My phone does not update instantly
 
-Edits are saved in the current browser's `localStorage`. If you clear site data or use another browser, you need to import/export JSON.
+Check Realtime in Supabase. If realtime is not enabled, refresh the phone page.
 
-### Other people cannot see my edits
+### Public visitors can edit
 
-Export JSON after editing, replace `db.json` in GitHub, commit, and push.
+This should not happen if Row Level Security is enabled. Check Supabase policies. Public users should only have `select` policies.
 
-### GitHub Pages shows old code
+### Old version keeps showing
 
-Update `CACHE_VERSION` in `service-worker.js`, commit, push, then hard-refresh the browser.
-
-### Avatar image does not show
-
-Use a full `https://` image URL. Some websites block external image loading, so the app falls back to emoji or initials.
+The service worker may be cached. Hard refresh, clear site data, or wait a minute after GitHub Pages deploys.

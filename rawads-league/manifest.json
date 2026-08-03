@@ -1,7 +1,7 @@
 {
   "name": "Rawad's League",
   "short_name": "Rawad League",
-  "description": "A simple local JSON friendship league scoreboard for Rawad and his friends.",
+  "description": "A Supabase-powered friendship league scoreboard for Rawad and his friends.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

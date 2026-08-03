@@ -1,4 +1,4 @@
-const CACHE_VERSION = "rawads-league-simple-v3";
+const CACHE_VERSION = "rawads-league-simple-v4";
 const APP_SHELL = [
   "./",
   "./index.html",

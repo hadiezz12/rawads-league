@@ -310,12 +310,12 @@
     const meta = el("div", "activity-meta");
     meta.appendChild(textEl("span", relativeDate(event.eventDate)));
     if (state.role === "admin") {
-      const actions = el("span", "mini-actions");
-      actions.append(
-        smallButton("Edit", () => openEventForm(event)),
-        smallButton("Delete", () => confirmDeleteEvent(event))
+      meta.appendChild(
+        actionMenu("Manage", [
+          { label: "Edit", action: () => openEventForm(event) },
+          { label: "Delete", action: () => confirmDeleteEvent(event), danger: true }
+        ])
       );
-      meta.appendChild(actions);
     }
 
     card.append(top, reason, meta);
@@ -533,14 +533,23 @@
           closeModal();
           openEventForm(null, friend.id);
         }),
-        button("Edit friend", "secondary", () => {
-          closeModal();
-          openFriendForm(friend);
-        }),
-        button("Delete friend", "danger", () => {
-          closeModal();
-          confirmDeleteFriend(friend);
-        })
+        actionMenu("Manage friend", [
+          {
+            label: "Edit friend",
+            action: () => {
+              closeModal();
+              openFriendForm(friend);
+            }
+          },
+          {
+            label: "Delete friend",
+            danger: true,
+            action: () => {
+              closeModal();
+              confirmDeleteFriend(friend);
+            }
+          }
+        ])
       );
       content.appendChild(actions);
     }
@@ -565,10 +574,25 @@
         const row = el("article", "history-row");
         row.append(pointBadge(event.points), textEl("strong", formatDate(event.eventDate)), textEl("span", event.reason));
         if (state.role === "admin") {
-          row.append(smallButton("Edit", () => {
-            closeModal();
-            openEventForm(event);
-          }));
+          row.append(
+            actionMenu("Manage", [
+              {
+                label: "Edit",
+                action: () => {
+                  closeModal();
+                  openEventForm(event);
+                }
+              },
+              {
+                label: "Delete",
+                danger: true,
+                action: () => {
+                  closeModal();
+                  confirmDeleteEvent(event);
+                }
+              }
+            ])
+          );
         }
         history.appendChild(row);
       });
@@ -812,6 +836,28 @@
   function smallButton(text, onClick) {
     const node = button(text, "tiny", onClick);
     return node;
+  }
+
+  function actionMenu(label, items) {
+    const details = el("details", "action-menu");
+    const summary = document.createElement("summary");
+    summary.textContent = label;
+    const list = el("div", "action-menu-list");
+
+    items.forEach((item) => {
+      const menuButton = document.createElement("button");
+      menuButton.type = "button";
+      menuButton.textContent = item.label;
+      if (item.danger) menuButton.className = "danger-item";
+      menuButton.addEventListener("click", () => {
+        details.removeAttribute("open");
+        item.action();
+      });
+      list.appendChild(menuButton);
+    });
+
+    details.append(summary, list);
+    return details;
   }
 
   function input(type, label, name, value = "") {

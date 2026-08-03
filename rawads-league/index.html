@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Rawad's League, a simple friendship scoreboard.">
-    <meta name="theme-color" content="#101318">
+    <meta name="theme-color" content="#111317">
     <title>Rawad's League</title>
     <link rel="icon" href="./assets/logo.svg" type="image/svg+xml">
     <link rel="manifest" href="./manifest.json">
@@ -32,14 +32,21 @@
 
     <main id="main" class="page">
       <section id="adminPanel" class="admin-panel" hidden aria-label="Admin actions">
-        <button id="addFriendBtn" class="button primary" type="button">Add friend</button>
-        <button id="addEventBtn" class="button primary" type="button">Add points</button>
-        <button id="settingsBtn" class="button secondary" type="button">Settings</button>
-        <button id="exportBtn" class="button secondary" type="button">Export JSON</button>
-        <label class="button secondary file-button">
-          Import JSON
-          <input id="importInput" type="file" accept="application/json,.json">
-        </label>
+        <div class="admin-primary-actions">
+          <button id="addFriendBtn" class="button primary" type="button">Add friend</button>
+          <button id="addEventBtn" class="button primary" type="button">Add points</button>
+        </div>
+        <details class="action-menu admin-more">
+          <summary>More</summary>
+          <div class="action-menu-list">
+            <button id="settingsBtn" type="button">Settings</button>
+            <button id="exportBtn" type="button">Export JSON</button>
+            <label>
+              Import JSON
+              <input id="importInput" type="file" accept="application/json,.json">
+            </label>
+          </div>
+        </details>
       </section>
 
       <section class="summary-grid" aria-label="League summary">

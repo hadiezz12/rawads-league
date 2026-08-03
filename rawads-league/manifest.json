@@ -1,0 +1,19 @@
+{
+  "name": "Rawad's League",
+  "short_name": "Rawad League",
+  "description": "A simple local JSON friendship league scoreboard for Rawad and his friends.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#101318",
+  "theme_color": "#101318",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "./assets/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

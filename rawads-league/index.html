@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Rawad's League, a simple friendship scoreboard.">
+    <meta name="theme-color" content="#101318">
+    <title>Rawad's League</title>
+    <link rel="icon" href="./assets/logo.svg" type="image/svg+xml">
+    <link rel="manifest" href="./manifest.json">
+    <link rel="stylesheet" href="./styles.css">
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="brand">
+        <img src="./assets/logo.svg" alt="" width="54" height="54">
+        <div>
+          <span class="kicker">Friendship league</span>
+          <h1 id="leagueName">Rawad's League</h1>
+          <p id="leagueSubtitle">Every action has consequences.</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="roleBadge" class="role-badge">Spectator</span>
+        <button id="loginBtn" class="button ghost" type="button">Admin login</button>
+        <button id="logoutBtn" class="button ghost" type="button" hidden>Logout</button>
+      </div>
+    </header>
+
+    <main id="main" class="page">
+      <section id="adminPanel" class="admin-panel" hidden aria-label="Admin actions">
+        <button id="addFriendBtn" class="button primary" type="button">Add friend</button>
+        <button id="addEventBtn" class="button primary" type="button">Add points</button>
+        <button id="settingsBtn" class="button secondary" type="button">Settings</button>
+        <button id="exportBtn" class="button secondary" type="button">Export JSON</button>
+        <label class="button secondary file-button">
+          Import JSON
+          <input id="importInput" type="file" accept="application/json,.json">
+        </label>
+      </section>
+
+      <section class="summary-grid" aria-label="League summary">
+        <article>
+          <span>Friends</span>
+          <strong id="friendCount">0</strong>
+        </article>
+        <article>
+          <span>Events</span>
+          <strong id="eventCount">0</strong>
+        </article>
+        <article>
+          <span>Latest</span>
+          <strong id="latestEventText">No activity yet</strong>
+        </article>
+      </section>
+
+      <section class="podium-section" aria-labelledby="podiumHeading">
+        <div class="section-title">
+          <span class="kicker">Top table</span>
+          <h2 id="podiumHeading">Podium</h2>
+        </div>
+        <div id="podium" class="podium" aria-live="polite"></div>
+      </section>
+
+      <section class="content-grid">
+        <section class="leaderboard-section" aria-labelledby="leaderboardHeading">
+          <div class="section-title with-tool">
+            <div>
+              <span class="kicker">Standings</span>
+              <h2 id="leaderboardHeading">Leaderboard</h2>
+            </div>
+            <label class="search">
+              <span class="sr-only">Search friends</span>
+              <input id="searchInput" type="search" placeholder="Search friends">
+            </label>
+          </div>
+          <div id="leaderboard" class="leaderboard" aria-live="polite"></div>
+        </section>
+
+        <section class="activity-section" aria-labelledby="activityHeading">
+          <div class="section-title">
+            <span class="kicker">Receipts</span>
+            <h2 id="activityHeading">Recent activity</h2>
+          </div>
+          <div class="filters">
+            <div class="segments" role="group" aria-label="Point filter">
+              <button class="segment active" type="button" data-filter="all">All</button>
+              <button class="segment" type="button" data-filter="positive">Positive</button>
+              <button class="segment" type="button" data-filter="negative">Negative</button>
+            </div>
+            <label>
+              <span class="sr-only">Filter by friend</span>
+              <select id="friendFilter"></select>
+            </label>
+          </div>
+          <div id="activity" class="activity-list" aria-live="polite"></div>
+          <button id="showMoreBtn" class="button secondary full" type="button" hidden>Show all</button>
+        </section>
+      </section>
+    </main>
+
+    <div id="modalRoot"></div>
+    <div id="toastRoot" class="toast-root" aria-live="polite" aria-atomic="false"></div>
+
+    <noscript>
+      <div class="noscript">Rawad's League needs JavaScript enabled.</div>
+    </noscript>
+  </body>
+</html>
